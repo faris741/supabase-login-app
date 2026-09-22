@@ -1,12 +1,9 @@
 # Supabase Login App
 
-A small Express login server backed by Supabase.
+An Express login form backed by Supabase.
 
-## Setup
+## Render setup
 
-1. Install dependencies with `npm install`.
-2. Set `SUPABASE_URL` and `SUPABASE_KEY` as environment variables or Replit Secrets.
-3. Make sure the Supabase `test_users` table contains `username`, `password`, and `role` columns.
-4. Start the server with `npm start`.
+Add `SUPABASE_URL` and `SUPABASE_KEY` as Render environment variables, then deploy the web service. The app listens on Render's `PORT` value.
 
-The server listens on port 3000 and exposes a login form at `/`.
+The Supabase table must be named `test_users` and include `username`, `password`, and `role` columns.
