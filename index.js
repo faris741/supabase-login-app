@@ -8,11 +8,6 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   throw new Error('SUPABASE_URL and SUPABASE_KEY must be configured.');
 }
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
-
 app.use(express.urlencoded({ extended: false }));
 
 function escapeHtml(value) {
@@ -24,7 +19,71 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
-function renderPage({ username = '', error = '', success = null } = {}) {
+function parseCookies(req) {
+  return Object.fromEntries(
+    String(req.headers.cookie || '')
+      .split(';')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const separator = part.indexOf('=');
+        if (separator === -1) return [part, ''];
+        return [
+          part.slice(0, separator),
+          decodeURIComponent(part.slice(separator + 1)),
+        ];
+      })
+  );
+}
+
+function cookieAttributes(maxAge) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function setSessionCookies(res, session) {
+  res.setHeader('Set-Cookie', [
+    `sb-access-token=${encodeURIComponent(session.access_token)}; ${cookieAttributes(session.expires_in || 3600)}`,
+    `sb-refresh-token=${encodeURIComponent(session.refresh_token)}; ${cookieAttributes(60 * 60 * 24 * 30)}`,
+  ]);
+}
+
+function clearSessionCookies(res) {
+  res.setHeader('Set-Cookie', [
+    `sb-access-token=; ${cookieAttributes(0)}`,
+    `sb-refresh-token=; ${cookieAttributes(0)}`,
+  ]);
+}
+
+function createSupabaseClient() {
+  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
+
+function userView(user) {
+  const metadata = user.user_metadata || {};
+  const appMetadata = user.app_metadata || {};
+  return {
+    username: metadata.username || user.email || 'there',
+    role: appMetadata.role || metadata.role || 'Member',
+  };
+}
+
+async function getAuthenticatedUser(req) {
+  const accessToken = parseCookies(req)['sb-access-token'];
+  if (!accessToken) return null;
+
+  const { data, error } = await createSupabaseClient().auth.getUser(accessToken);
+  if (error || !data.user) return null;
+  return userView(data.user);
+}
+
+function renderPage({ email = '', error = '', success = null } = {}) {
   const isSuccess = Boolean(success);
   const pageTitle = isSuccess ? 'Welcome back' : error ? 'Login issue' : 'Sign in';
   const message = error
@@ -41,7 +100,9 @@ function renderPage({ username = '', error = '', success = null } = {}) {
           <span>Account role</span>
           <strong>${escapeHtml(success.role || 'Member')}</strong>
         </div>
-        <a class="button button-secondary" href="/">Return to sign in</a>
+        <form action="/logout" method="POST">
+          <button class="button button-secondary" type="submit">Sign out</button>
+        </form>
       </section>
     `
     : `
@@ -51,14 +112,14 @@ function renderPage({ username = '', error = '', success = null } = {}) {
       ${message}
       <form action="/login" method="POST" id="login-form">
         <div class="field">
-          <label for="username">Username</label>
+          <label for="email">Email</label>
           <input
-            type="text"
-            id="username"
-            name="username"
-            value="${escapeHtml(username)}"
-            placeholder="Enter your username"
-            autocomplete="username"
+            type="email"
+            id="email"
+            name="email"
+            value="${escapeHtml(email)}"
+            placeholder="Enter your email"
+            autocomplete="email"
             autocapitalize="none"
             spellcheck="false"
             required
@@ -375,8 +436,9 @@ function renderPage({ username = '', error = '', success = null } = {}) {
     </html>`;
 }
 
-app.get('/', (req, res) => {
-  res.send(renderPage());
+app.get('/', async (req, res) => {
+  const user = await getAuthenticatedUser(req);
+  res.send(renderPage({ success: user }));
 });
 
 app.get('/healthz', (req, res) => {
@@ -384,45 +446,45 @@ app.get('/healthz', (req, res) => {
 });
 
 app.post('/login', async (req, res) => {
-  const username = String(req.body.username || '').trim();
+  const email = String(req.body.email || '').trim();
   const password = String(req.body.password || '');
 
-  if (!username || !password) {
+  if (!email || !password) {
     return res.status(400).send(
       renderPage({
-        username,
-        error: 'Enter both your username and password to continue.',
+        email,
+        error: 'Enter both your email and password to continue.',
       })
     );
   }
 
-  const { data: user, error } = await supabase
-    .from('test_users')
-    .select('username, role')
-    .eq('username', username)
-    .eq('password', password)
-    .maybeSingle();
+  const { data, error } = await createSupabaseClient().auth.signInWithPassword({
+    email,
+    password,
+  });
 
-  if (error) {
-    console.error('Supabase query failed:', error.message);
-    return res.status(500).send(
+  if (error || !data.session || !data.user) {
+    const invalidCredentials = error?.status === 400;
+    if (!invalidCredentials) {
+      console.error('Supabase sign-in failed:', error?.message || 'No session returned');
+    }
+    return res.status(invalidCredentials ? 401 : 502).send(
       renderPage({
-        username,
-        error: 'We could not reach the login service. Please try again.',
+        email,
+        error: invalidCredentials
+          ? 'That email or password is not correct.'
+          : 'We could not reach the login service. Please try again.',
       })
     );
   }
 
-  if (!user) {
-    return res.status(401).send(
-      renderPage({
-        username,
-        error: 'That username or password is not correct.',
-      })
-    );
-  }
+  setSessionCookies(res, data.session);
+  return res.send(renderPage({ success: userView(data.user) }));
+});
 
-  return res.send(renderPage({ success: user }));
+app.post('/logout', (req, res) => {
+  clearSessionCookies(res);
+  res.redirect(303, '/');
 });
 
 app.listen(PORT, () => {

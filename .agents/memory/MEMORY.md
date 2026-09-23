@@ -1,0 +1,2 @@
+- [GitHub push authentication](github-push-auth.md) — a connected GitHub App may read the repo but still lack usable write credentials in the workspace.
+- [GitHub publishing auth](github-publishing-auth.md) — use a fresh attached GitHub connector and Git database API when existing HTTPS credentials reject an exact commit push.
