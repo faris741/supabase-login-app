@@ -43,3 +43,8 @@ The included `render.yaml` defines a Node web service. In Render:
 
 Render supplies the `PORT` environment variable automatically. The health
 check endpoint is `/healthz`.
+
+
+## Role-based home pages
+
+Users with `app_metadata.role` set to `admin` are sent to `/admin` after sign-in. Other authenticated users are sent to `/guest`. Both pages show the current role at the top and protect their routes with the Supabase session.
